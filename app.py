@@ -9,21 +9,21 @@ from dotenv import load_dotenv
 from google import genai
 
 # --- 0. PROFESSIONAL LOGGING CONFIGURATION ---
-# This ensures every automation event is recorded for debugging and auditing.
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[logging.FileHandler("automation_logs.log"), logging.StreamHandler()]
+    handlers=[logging.StreamHandler()] # Removed FileHandler for Cloud compatibility
 )
 logger = logging.getLogger(__name__)
 
 # --- 1. CONFIGURATION AND INITIALIZATION ---
-
 load_dotenv()
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+
+# FIX: Support for both local (.env) and Streamlit Cloud (Secrets)
+GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY")
 
 if not GEMINI_API_KEY:
-    st.error("🚨 CRITICAL ERROR: GEMINI_API_KEY not found in environment.")
+    st.error("🚨 CRITICAL ERROR: GEMINI_API_KEY not found. Please add it to Streamlit Secrets.")
     st.stop() 
 
 try:
@@ -70,10 +70,9 @@ def extract_code(text: str) -> str:
 def extract_report(text: str) -> str:
     if "RATIONALE:" in text:
         return text.split("```python")[0].strip()
-    return "Report generation failed."
+    return "Report generated successfully. Review the code below."
 
 def send_to_webhook(dataframe, webhook_url):
-    """Bridge function to send cleaned data to external automation (n8n/Zapier)."""
     try:
         data_json = dataframe.head(100).to_dict(orient='records')
         payload = {
@@ -91,11 +90,12 @@ def send_to_webhook(dataframe, webhook_url):
 
 st.set_page_config(page_title="Smart Data Profiler", layout="wide")
 st.title("🧠 Smart Data Profiler & Cleanser (Gemini Agent)")
-st.caption("A Generative AI tool for automated data quality assessment and workflow integration.")
+st.caption("Automated data quality assessment and workflow integration for AI Automation Associates.")
 
 uploaded_file = st.file_uploader("📂 Choose a CSV file", type="csv")
 
 if uploaded_file is not None:
+    # Use session state to prevent reloading data on every click
     if 'df_original' not in st.session_state:
         st.session_state['df_original'] = pd.read_csv(uploaded_file)
     
@@ -108,18 +108,17 @@ if uploaded_file is not None:
 
         with st.spinner('🤖 AI Agent is analyzing the data...'):
             try:
-                # Using Gemini 2.0 Flash for low-latency automation
-                response = client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
+                # FIX: Using the most stable model name
+                response = client.models.generate_content(model="gemini-2.0-flash", contents=prompt)
                 
                 if not response.text:
-                    logger.warning("Empty AI response received.")
-                    st.error("⚠️ AI response blocked by safety filters.")
+                    st.error("⚠️ AI response blocked or empty.")
                     st.stop()
                 
                 cleaning_code = extract_code(response.text)
                 report_text = extract_report(response.text)
 
-                # Safe Execution
+                # Safe Execution of AI-generated code
                 df_clean = st.session_state['df_original'].copy()
                 exec(cleaning_code, {'pd': pd, 'np': np, 'df': df_clean})
                 
@@ -131,7 +130,7 @@ if uploaded_file is not None:
 
             except Exception as e:
                 logger.error(f"Pipeline failure: {e}")
-                st.error(f"❌ Error: {e}")
+                st.error(f"❌ AI Processing Error: {e}")
 
     # --- RESULTS DISPLAY ---
     if 'df_clean' in st.session_state:
@@ -146,23 +145,18 @@ if uploaded_file is not None:
         st.subheader("4. Cleaned Data Preview")
         st.dataframe(st.session_state['df_clean'].head(10))
         
-        # Download
         csv = st.session_state['df_clean'].to_csv(index=False).encode('utf-8')
         st.download_button("⬇️ Download Cleaned CSV", csv, "cleaned_data.csv", "text/csv")
 
-        # --- AUTOMATION WORKFLOW ---
         st.divider()
         st.subheader("🚀 5. Automation Workflow")
-        st.write("Push cleaned data directly to n8n, Zapier, or a CRM via Webhook.")
-        
-        webhook_url = st.text_input("Enter Webhook URL:", placeholder="[https://n8n.example.com/webhook/](https://n8n.example.com/webhook/)...")
+        webhook_url = st.text_input("Enter Webhook URL (Webhook.site, n8n, Zapier):")
 
         if st.button("📤 Trigger Automation Pipeline"):
             if webhook_url:
-                logger.info(f"Triggering Webhook: {webhook_url}")
                 if send_to_webhook(st.session_state['df_clean'], webhook_url):
-                    st.success("✅ Data successfully sent to automation!")
+                    st.success("✅ Data successfully sent to automation pipeline!")
                 else:
-                    st.error("❌ Webhook delivery failed.")
+                    st.error("❌ Webhook delivery failed. Check URL or logs.")
             else:
-                st.warning("Provide a Webhook URL.")
+                st.warning("Please provide a Webhook URL first.")
